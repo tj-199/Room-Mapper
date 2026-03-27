@@ -1,0 +1,15 @@
+/* Room Mapper Pro - Minimal external styles */
+/* Primary styles are inline in index.html for PWA offline reliability */
+
+/* Disabled button styling */
+.btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
+/* Active tool indicator */
+.btn.active {
+    outline: 2px solid #facc15;
+    outline-offset: 2px;
+}

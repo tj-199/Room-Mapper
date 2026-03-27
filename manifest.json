@@ -1,0 +1,10 @@
+{
+    "name": "Room Mapper Pro",
+    "short_name": "RoomMapper",
+    "start_url": "./index.html",
+    "display": "standalone",
+    "background_color": "#0f172a",
+    "theme_color": "#38bdf8",
+    "description": "Trace wall photos into dimensioned DXF line drawings.",
+    "icons": []
+}

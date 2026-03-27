@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Room Mapper Pro</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --panel-bg: #1e293b;
+            --accent: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.3);
+            --text-main: #f8fafc;
+            --text-dim: #94a3b8;
+            --error: #ef4444;
+            --success: #22c55e;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            font-family: 'Inter', -apple-system, system-ui, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* --- Header --- */
+        header {
+            padding: 1rem 1.5rem;
+            background: var(--panel-bg);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .logo { font-weight: 700; font-size: 1.25rem; color: var(--accent); letter-spacing: -0.5px; }
+
+        /* --- Main Layout --- */
+        main {
+            flex: 1;
+            display: flex;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* --- Canvas & Image Area --- */
+        #viewport {
+            flex: 1;
+            position: relative;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden; /* Important for containing the potentially transformed image */
+        }
+
+        /* Container that ensures canvas and image scale identically */
+        .stage-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            /* Dimensions are set via JS to preserve aspect ratio */
+        }
+
+        #bgImage {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: block;
+            transform-origin: 0 0; /* Important for 3d transform */
+        }
+
+        canvas {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: block;
+            cursor: crosshair;
+            z-index: 10; /* Sits over the image */
+        }
+
+        /* Transform Overlay (The pins) */
+        #transformOverlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 20;
+            display: none;
+            pointer-events: none; /* Let clicks pass unless hitting a pin */
+        }
+
+        .transform-pin {
+            position: absolute;
+            width: 30px; height: 30px;
+            background: rgba(239, 68, 68, 0.8);
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: auto;
+            cursor: grab;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+        }
+        .transform-pin:active { cursor: grabbing; background: #ef4444; }
+
+        /* Dialogs */
+        .dialog {
+            position: absolute;
+            top: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(30, 41, 59, 0.95);
+            padding: 1rem 1.5rem;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.1);
+            color: white;
+            z-index: 50;
+            display: none;
+            text-align: center;
+        }
+        .dialog-actions {
+            margin-top: 1rem;
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+        }
+
+        /* --- UI Overlay --- */
+        .controls {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 1rem;
+            padding: 0.75rem;
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(8px);
+            border-radius: 100px;
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            z-index: 100;
+        }
+
+        .btn {
+            background: none;
+            border: none;
+            color: var(--text-main);
+            padding: 0.6rem 1.2rem;
+            border-radius: 100px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-size: 0.9rem;
+            white-space: nowrap;
+        }
+
+        .btn:hover { background: rgba(255,255,255,0.1); }
+        .btn.primary { background: var(--accent); color: var(--bg-dark); }
+        .btn.primary:hover { transform: scale(1.05); filter: brightness(1.1); }
+
+        /* --- Sidebar --- */
+        #sidebar {
+            width: 320px;
+            background: var(--panel-bg);
+            border-left: 1px solid rgba(255,255,255,0.1);
+            padding: 1.5rem;
+            overflow-y: auto;
+            display: none; /* Shown when feature is selected */
+        }
+
+        .side-title { font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 1rem; }
+
+        /* --- Mobile Responsive --- */
+        @media (max-width: 768px) {
+            #sidebar { position: fixed; right: 0; top: 0; bottom: 0; z-index: 200; box-shadow: -10px 0 30px rgba(0,0,0,0.5); }
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="logo">ROOM MAPPER PRO</div>
+        <div class="header-actions">
+            <button class="btn" id="btn-export">Export DXF</button>
+        </div>
+    </header>
+
+    <main>
+        <div id="viewport">
+            <div class="stage-container" id="stage">
+                <img id="bgImage" alt="Background" style="display:none;">
+                <canvas id="mainCanvas"></canvas>
+                
+                <div id="transformOverlay">
+                    <div class="transform-pin" id="pin0"></div>
+                    <div class="transform-pin" id="pin1"></div>
+                    <div class="transform-pin" id="pin2"></div>
+                    <div class="transform-pin" id="pin3"></div>
+                </div>
+            </div>
+            
+            <div id="transformDialog" class="dialog">
+                <h4>Correct Perspective?</h4>
+                <p style="font-size:0.85rem; color:var(--text-dim); margin-top:0.5rem">Drag the red pins to the 4 corners of the physical wall to flatten the image.</p>
+                <div class="dialog-actions">
+                    <button class="btn" id="btn-skip-transform">Skip</button>
+                    <button class="btn primary" id="btn-apply-transform">Apply Transform</button>
+                    <button class="btn" id="btn-reset-transform" style="display:none">Reset Image</button>
+                </div>
+            </div>
+
+            <div class="controls">
+                <input type="file" id="photoInput" hidden accept="image/*">
+                <button class="btn primary" id="btn-upload">Upload</button>
+                <button class="btn" id="btn-wall" disabled>Set Wall</button>
+                <button class="btn" id="btn-feature" disabled>Add Feature</button>
+                <button class="btn" id="btn-dimension" disabled>Dimension</button>
+                <button class="btn" id="btn-delete" disabled style="color:var(--error);display:none;">Delete Feature</button>
+            </div>
+        </div>
+
+        <div id="sidebar">
+            <h3 class="side-title">Feature Details</h3>
+            <!-- Dynamic Form content goes here -->
+        </div>
+    </main>
+
+    <script src="perspective.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
