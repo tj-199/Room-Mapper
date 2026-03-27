@@ -585,26 +585,69 @@ function getCalculatedDistance(f1Id, e1Edge, f2Id, e2Edge) {
 function recalcRealPositions() {
     const wall = features.find(f => f.type === 'wall');
     if (!wall) return;
+    
+    // Reset all non-wall positions to ensure clean recalculation
     features.forEach(f => {
-        if (f.type === 'wall') { f.realX = 0; f.realY = 0; return; }
-        const featureDims = dimensions.filter(d => !d.isReference && (d.from.featureId === f.id || d.to.featureId === f.id));
-        featureDims.forEach(dim => {
-            const isFrom = dim.from.featureId === f.id;
-            const myEdge = isFrom ? dim.from.edge : dim.to.edge;
-            const otherSide = isFrom ? dim.to : dim.from;
-            const otherFeature = features.find(feat => feat.id === otherSide.featureId);
-            if (!otherFeature) return;
-            const otherEdge = otherSide.edge;
-            if (['left', 'right'].includes(myEdge)) {
-                let baseX = otherFeature.realX; if (otherEdge === 'right') baseX += otherFeature.realW;
-                if (myEdge === 'left') f.realX = baseX + dim.value; else f.realX = baseX + dim.value - f.realW;
+        if (f.type === 'wall') {
+            f.realX = 0; f.realY = 0;
+            f.resolvedX = true; f.resolvedY = true;
+        } else {
+            f.realX = 0; f.realY = 0;
+            f.resolvedX = false; f.resolvedY = false;
+        }
+    });
+
+    const activeDims = dimensions.filter(d => !d.isReference);
+
+    // Multi-pass resolution algorithm (Resolving the Constraint Graph)
+    let madeProgress = true;
+    let passes = 0;
+
+    while (madeProgress && passes < 10) {
+        madeProgress = false;
+        passes++;
+
+        activeDims.forEach(dim => {
+            const f1 = features.find(f => f.id === dim.from.featureId);
+            const f2 = features.find(f => f.id === dim.to.featureId);
+            if (!f1 || !f2) return;
+
+            const e1 = dim.from.edge;
+            const e2 = dim.to.edge;
+
+            // X-Axis (Horizontal constraints using Vertical edges)
+            if (['left', 'right'].includes(e1)) {
+                if (f1.resolvedX && !f2.resolvedX) {
+                    let baseX = f1.realX + (e1 === 'right' ? f1.realW : 0);
+                    f2.realX = baseX + (e2 === 'left' ? dim.value : dim.value - f2.realW);
+                    f2.resolvedX = true;
+                    madeProgress = true;
+                } 
+                else if (!f1.resolvedX && f2.resolvedX) {
+                    let baseX = f2.realX + (e2 === 'right' ? f2.realW : 0);
+                    f1.realX = baseX + (e1 === 'left' ? dim.value : dim.value - f1.realW);
+                    f1.resolvedX = true;
+                    madeProgress = true;
+                }
             }
-            if (['top', 'bottom'].includes(myEdge)) {
-                let baseY = otherFeature.realY; if (otherEdge === 'top') baseY += otherFeature.realH;
-                if (myEdge === 'bottom') f.realY = baseY + dim.value; else f.realY = baseY + dim.value - f.realH;
+
+            // Y-Axis (Vertical constraints using Horizontal edges)
+            if (['top', 'bottom'].includes(e1)) {
+                if (f1.resolvedY && !f2.resolvedY) {
+                    let baseY = f1.realY + (e1 === 'top' ? f1.realH : 0);
+                    f2.realY = baseY + (e2 === 'bottom' ? dim.value : dim.value - f2.realH);
+                    f2.resolvedY = true;
+                    madeProgress = true;
+                } 
+                else if (!f1.resolvedY && f2.resolvedY) {
+                    let baseY = f2.realY + (e2 === 'top' ? f2.realH : 0);
+                    f1.realY = baseY + (e1 === 'bottom' ? dim.value : dim.value - f1.realH);
+                    f1.resolvedY = true;
+                    madeProgress = true;
+                }
             }
         });
-    });
+    }
 }
 function exportDXF() {
     const wall = features.find(f => f.type === 'wall');
