@@ -26,6 +26,30 @@ let showDimensions = true;
 let dimLine1 = null; 
 let dimLine2 = null;
 
+let scaleX = null; // pixels per real-inch (horizontal)
+let scaleY = null; // pixels per real-inch (vertical)
+
+// Zoom & Pan state
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+let panStartPanX = 0;
+let panStartPanY = 0;
+
+// Drag-to-move state
+let dragTarget = null;
+let isDragging = false;
+let dragStartX = 0;
+let dragStartY = 0;
+let dragOrigX1 = 0;
+let dragOrigY1 = 0;
+let dragOrigX2 = 0;
+let dragOrigY2 = 0;
+const DRAG_THRESHOLD = 5;
+
 // Transform variables
 const pins = [
     document.getElementById('pin0'), document.getElementById('pin1'),
@@ -46,6 +70,8 @@ photoInput.addEventListener('change', (e) => {
         bgImage.onload = () => {
             bgImage.style.display = 'block';
             bgImage.style.transform = 'none'; // reset previous transforms
+            zoom = 1; panX = 0; panY = 0;
+            applyZoomTransform();
             resizeStage();
             startTransformFlow();
         };
@@ -154,9 +180,7 @@ pins.forEach(pin => {
 });
 document.addEventListener('mousemove', (e) => {
     if (!activePin) return;
-    const rect = stageContainer.getBoundingClientRect();
-    let x = e.clientX - rect.left;
-    let y = e.clientY - rect.top;
+    const { x, y } = screenToCanvas(e.clientX, e.clientY);
     setPinPos(activePin, x, y);
 });
 document.addEventListener('mouseup', () => { activePin = null; });
@@ -168,22 +192,126 @@ function setPinPos(pin, x, y) {
 
 
 // ============================================================
+// ZOOM & PAN
+// ============================================================
+
+/**
+ * Converts screen (client) coordinates to canvas-local coordinates,
+ * accounting for the current zoom level and pan offset.
+ */
+function screenToCanvas(clientX, clientY) {
+    const rect = stageContainer.getBoundingClientRect();
+    // rect already reflects the CSS scale() transform, so we need
+    // to map back to the un-scaled coordinate space.
+    const x = (clientX - rect.left) / zoom;
+    const y = (clientY - rect.top) / zoom;
+    return { x, y };
+}
+
+/** Applies the current zoom + pan as a CSS transform on #stage. */
+function applyZoomTransform() {
+    stageContainer.style.transformOrigin = '0 0';
+    stageContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    const indicator = document.getElementById('zoomIndicator');
+    if (indicator) indicator.textContent = `${Math.round(zoom * 100)}%`;
+}
+
+// Scroll-wheel zoom (cursor-centered)
+const viewport = document.getElementById('viewport');
+viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const zoomFactor = 1.1;
+    const oldZoom = zoom;
+    if (e.deltaY < 0) {
+        zoom = Math.min(zoom * zoomFactor, 6);
+    } else {
+        zoom = Math.max(zoom / zoomFactor, 0.25);
+    }
+
+    // Keep the point under the cursor fixed:
+    // Find cursor position relative to viewport
+    const vpRect = viewport.getBoundingClientRect();
+    const cursorX = e.clientX - vpRect.left;
+    const cursorY = e.clientY - vpRect.top;
+
+    // Adjust pan so the world-point under the cursor stays put
+    panX = cursorX - (cursorX - panX) * (zoom / oldZoom);
+    panY = cursorY - (cursorY - panY) * (zoom / oldZoom);
+
+    applyZoomTransform();
+}, { passive: false });
+
+// Middle-mouse pan
+viewport.addEventListener('mousedown', (e) => {
+    if (e.button !== 1) return; // middle button only
+    e.preventDefault();
+    isPanning = true;
+    panStartX = e.clientX;
+    panStartY = e.clientY;
+    panStartPanX = panX;
+    panStartPanY = panY;
+    viewport.style.cursor = 'grabbing';
+});
+document.addEventListener('mousemove', (e) => {
+    if (!isPanning) return;
+    panX = panStartPanX + (e.clientX - panStartX);
+    panY = panStartPanY + (e.clientY - panStartY);
+    applyZoomTransform();
+});
+document.addEventListener('mouseup', (e) => {
+    if (e.button === 1 && isPanning) {
+        isPanning = false;
+        viewport.style.cursor = '';
+    }
+});
+
+// Prevent middle-click auto-scroll browser behavior
+viewport.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+
+// ============================================================
 // CORE INTERACTION (DRAWING & SELECTION)
 // ============================================================
 
 canvas.addEventListener('mousedown', handleMouseDown);
 canvas.addEventListener('mousemove', handleMouseMove);
+canvas.addEventListener('mouseup', handleMouseUp);
+
+function handleMouseUp(e) {
+    if (!dragTarget) return;
+    if (isDragging) {
+        syncRealFromPixels(dragTarget);
+        recomputeDimValues(dragTarget);
+        selectFeature(dragTarget.id);
+        buildSidebar();
+        canvas.style.cursor = 'move';
+    } else {
+        // Was just a click, not a drag
+        selectFeature(dragTarget.id);
+    }
+    dragTarget = null;
+    isDragging = false;
+}
 
 function handleMouseDown(e) {
     if (state === 'TRANSFORM') return;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (isPanning) return;
+    const { x, y } = screenToCanvas(e.clientX, e.clientY);
 
     // --- Selection Mode ---
     if (state === 'SELECT') {
         const hit = getFeatureAtPoint(x, y);
-        if (hit) {
+        if (hit && hit.type !== 'wall') {
+            // Start potential drag — don't select yet
+            dragTarget = hit;
+            isDragging = false;
+            dragStartX = x;
+            dragStartY = y;
+            dragOrigX1 = hit.x1;
+            dragOrigY1 = hit.y1;
+            dragOrigX2 = hit.x2;
+            dragOrigY2 = hit.y2;
+        } else if (hit) {
+            // Wall — select only, no drag
             selectFeature(hit.id);
         } else {
             selectFeature(null);
@@ -226,6 +354,7 @@ function handleMouseDown(e) {
             if (value && !isNaN(parseFloat(value))) {
                 addDimensionObj(parseFloat(value), false);
                 recalcRealPositions();
+                syncPixelsFromReal();
             } else {
                 dimLine1 = null; dimLine2 = null; state = 'SELECT';
             }
@@ -250,7 +379,6 @@ function handleMouseDown(e) {
             currentFeature.y2 = y;
             normalizeRect(currentFeature);
 
-            // If it's the master wall, enforce wall-specific logic
             const isWall = currentFeature.type === 'wall';
             const label = prompt('Enter a label:', isWall ? 'Wall' : 'Feature');
             const w = prompt('Enter REAL width (inches):');
@@ -260,15 +388,25 @@ function handleMouseDown(e) {
             if (w && !isNaN(parseFloat(w))) currentFeature.realW = parseFloat(w);
             if (h && !isNaN(parseFloat(h))) currentFeature.realH = parseFloat(h);
 
+            if (isWall) {
+                // Wall defines the scale reference for all features.
+                // The pixel rect the user drew IS the wall — compute scale from it.
+                computeScale(currentFeature);
+            } else {
+                // Resize the drawn rect so it matches the entered real dims at scale.
+                // The top-left click point (x1, y1) stays fixed as an anchor.
+                applyScaleToFeature(currentFeature);
+            }
+
             features.push(currentFeature);
             
             // Sort features so walls are always at the beginning (index 0)
-            // This ensures they are drawn first (in the background) 
+            // This ensures they are drawn first (in the background)
             // and hit-tested last (so smaller features on top are clickable).
             features.sort((a, b) => {
                 if (a.type === 'wall' && b.type !== 'wall') return -1;
                 if (b.type === 'wall' && a.type !== 'wall') return 1;
-                return 0; // maintain relative order of others
+                return 0;
             });
 
             selectFeature(currentFeature.id);
@@ -282,10 +420,33 @@ function handleMouseDown(e) {
 }
 
 function handleMouseMove(e) {
+    const { x, y } = screenToCanvas(e.clientX, e.clientY);
+
+    // --- Drag-to-move logic ---
+    if (dragTarget) {
+        const dx = x - dragStartX;
+        const dy = y - dragStartY;
+        if (!isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
+            isDragging = true;
+            canvas.style.cursor = 'grabbing';
+        }
+        if (isDragging) {
+            dragTarget.x1 = dragOrigX1 + dx;
+            dragTarget.y1 = dragOrigY1 + dy;
+            dragTarget.x2 = dragOrigX2 + dx;
+            dragTarget.y2 = dragOrigY2 + dy;
+            render();
+        }
+        return;
+    }
+
+    // --- Hover cursor in SELECT mode ---
+    if (state === 'SELECT') {
+        const hover = getFeatureAtPoint(x, y);
+        canvas.style.cursor = (hover && hover.type !== 'wall') ? 'move' : 'crosshair';
+    }
+
     if (!currentFeature && state !== 'DIM_SELECT_LINE1' && state !== 'DIM_SELECT_LINE2') return;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
 
     if (currentFeature) {
         currentFeature.x2 = x;
@@ -354,6 +515,7 @@ function deleteSelectedFeature() {
     selectedFeatureId = null;
     selectFeature(null);
     recalcRealPositions();
+    syncPixelsFromReal();
     render();
 }
 
@@ -365,6 +527,10 @@ document.getElementById('btn-wall').addEventListener('click', () => { state = 'D
 document.getElementById('btn-feature').addEventListener('click', () => { state = 'DRAWING_FEATURE'; currentFeature = null; });
 document.getElementById('btn-dimension').addEventListener('click', () => { state = 'DIM_SELECT_LINE1'; });
 document.getElementById('btn-export').addEventListener('click', exportDXF);
+document.getElementById('btn-reset-view').addEventListener('click', () => {
+    zoom = 1; panX = 0; panY = 0;
+    applyZoomTransform();
+});
 
 
 // ============================================================
@@ -498,7 +664,16 @@ function buildSidebar() {
             f.label = document.getElementById('edit-label').value;
             f.realW = parseFloat(document.getElementById('edit-w').value);
             f.realH = parseFloat(document.getElementById('edit-h').value);
+            if (f.type === 'wall') {
+                // Wall dims changed — recompute scale and resize all features to match.
+                computeScale(f);
+                rescaleAllFeatures();
+            } else {
+                // A single feature's dims changed — resize just this one.
+                applyScaleToFeature(f);
+            }
             recalcRealPositions();
+            syncPixelsFromReal();
             render();
             buildSidebar();
             updateStatus('Edits saved.');
@@ -512,7 +687,107 @@ function buildSidebar() {
 }
 
 // ============================================================
-// UTILITIES & PREVIOUS MATH (Copied from previous valid state)
+// SCALE UTILITIES
+// ============================================================
+
+/**
+ * Computes pixels-per-inch scale from the wall's drawn pixel rect and real dims.
+ * Called once when the wall is finalized, and again if wall dims are edited.
+ */
+function computeScale(wall) {
+    const pw = wall.x2 - wall.x1;
+    const ph = wall.y2 - wall.y1;
+    if (wall.realW > 0 && wall.realH > 0 && pw > 0 && ph > 0) {
+        scaleX = pw / wall.realW; // px per inch, horizontal axis
+        scaleY = ph / wall.realH; // px per inch, vertical axis
+    }
+}
+
+/**
+ * Resizes a feature's pixel rect (anchored at x1, y1) so its drawn size
+ * matches its real dimensions at the current scale.
+ */
+function applyScaleToFeature(f) {
+    if (scaleX && scaleY && f.realW > 0 && f.realH > 0) {
+        f.x2 = f.x1 + f.realW * scaleX;
+        f.y2 = f.y1 + f.realH * scaleY;
+    }
+}
+
+/**
+ * Re-applies scale to all non-wall features.
+ * Called when the wall dims are edited so everything stays in proportion.
+ */
+function rescaleAllFeatures() {
+    features.forEach(f => {
+        if (f.type !== 'wall') {
+            applyScaleToFeature(f);
+        }
+    });
+}
+
+/**
+ * After dragging: derives real position from pixel position.
+ * Uses inverse scale from the wall's drawn position.
+ */
+function syncRealFromPixels(f) {
+    const wall = features.find(w => w.type === 'wall');
+    if (!wall || !scaleX || !scaleY) return;
+    f.realX = (f.x1 - wall.x1) / scaleX;
+    f.realY = (f.y1 - wall.y1) / scaleY;
+}
+
+/**
+ * After constraint solver: snaps feature pixel positions to match
+ * their solved real positions, using scale and wall origin.
+ */
+function syncPixelsFromReal() {
+    const wall = features.find(f => f.type === 'wall');
+    if (!wall || !scaleX || !scaleY) return;
+    features.forEach(f => {
+        if (f.type === 'wall') return;
+        if (f.resolvedX) {
+            f.x1 = wall.x1 + f.realX * scaleX;
+            f.x2 = f.x1 + f.realW * scaleX;
+        }
+        if (f.resolvedY) {
+            f.y1 = wall.y1 + f.realY * scaleY;
+            f.y2 = f.y1 + f.realH * scaleY;
+        }
+    });
+}
+
+/**
+ * After dragging: recomputes the value of every non-reference
+ * dimension connected to the moved feature.
+ */
+function recomputeDimValues(movedFeature) {
+    dimensions.forEach(dim => {
+        if (dim.isReference) return;
+        if (dim.from.featureId !== movedFeature.id &&
+            dim.to.featureId !== movedFeature.id) return;
+
+        const f1 = features.find(f => f.id === dim.from.featureId);
+        const f2 = features.find(f => f.id === dim.to.featureId);
+        if (!f1 || !f2) return;
+
+        const e1 = dim.from.edge;
+        const e2 = dim.to.edge;
+
+        if (['left', 'right'].includes(e1)) {
+            const p1 = f1.realX + (e1 === 'right' ? f1.realW : 0);
+            const p2 = f2.realX + (e2 === 'right' ? f2.realW : 0);
+            dim.value = parseFloat(Math.abs(p1 - p2).toFixed(2));
+        } else {
+            const p1 = f1.realY + (e1 === 'top' ? f1.realH : 0);
+            const p2 = f2.realY + (e2 === 'top' ? f2.realH : 0);
+            dim.value = parseFloat(Math.abs(p1 - p2).toFixed(2));
+        }
+    });
+}
+
+// ============================================================
+// UTILITIES & PREVIOUS MATH
 // ============================================================
 function normalizeRect(f) {
     const minX = Math.min(f.x1, f.x2); const maxX = Math.max(f.x1, f.x2);
@@ -653,6 +928,7 @@ function exportDXF() {
     const wall = features.find(f => f.type === 'wall');
     if (!wall) { alert('Please define a wall first.'); return; }
     recalcRealPositions();
+    syncPixelsFromReal();
     let dxf = '0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n10\n';
     dxf += '0\nLAYER\n2\nWALL\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nFEATURES\n70\n0\n62\n5\n6\nCONTINUOUS\n0\nLAYER\n2\nDIMENSIONS\n70\n0\n62\n2\n6\nCONTINUOUS\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n';
     features.forEach(f => {

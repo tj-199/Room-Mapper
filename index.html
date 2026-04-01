@@ -66,6 +66,7 @@
         .stage-container {
             position: relative;
             box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            transform-origin: 0 0;
             /* Dimensions are set via JS to preserve aspect ratio */
         }
 
@@ -181,6 +182,21 @@
         @media (max-width: 768px) {
             #sidebar { position: fixed; right: 0; top: 0; bottom: 0; z-index: 200; box-shadow: -10px 0 30px rgba(0,0,0,0.5); }
         }
+
+        .zoom-indicator {
+            position: absolute;
+            bottom: 5.5rem;
+            right: 1rem;
+            background: rgba(30, 41, 59, 0.8);
+            backdrop-filter: blur(8px);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            z-index: 100;
+            pointer-events: none;
+            font-variant-numeric: tabular-nums;
+        }
     </style>
 </head>
 <body>
@@ -216,12 +232,15 @@
                 </div>
             </div>
 
+            <div id="zoomIndicator" class="zoom-indicator">100%</div>
+
             <div class="controls">
                 <input type="file" id="photoInput" hidden accept="image/*">
                 <button class="btn primary" id="btn-upload">Upload</button>
                 <button class="btn" id="btn-wall" disabled>Set Wall</button>
                 <button class="btn" id="btn-feature" disabled>Add Feature</button>
                 <button class="btn" id="btn-dimension" disabled>Dimension</button>
+                <button class="btn" id="btn-reset-view">Reset View</button>
                 <button class="btn" id="btn-delete" disabled style="color:var(--error);display:none;">Delete Feature</button>
             </div>
         </div>
