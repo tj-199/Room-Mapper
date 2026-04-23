@@ -21,34 +21,15 @@ let dimensions = [];
 let state = 'SELECT'; 
 let currentFeature = null;
 let selectedFeatureId = null;
+let selectedDimId = null;
 let showDimensions = true;
+
+let activeDragDimId = null;
+let dragStartX = 0;
+let dragStartY = 0;
 
 let dimLine1 = null; 
 let dimLine2 = null;
-
-let scaleX = null; // pixels per real-inch (horizontal)
-let scaleY = null; // pixels per real-inch (vertical)
-
-// Zoom & Pan state
-let zoom = 1;
-let panX = 0;
-let panY = 0;
-let isPanning = false;
-let panStartX = 0;
-let panStartY = 0;
-let panStartPanX = 0;
-let panStartPanY = 0;
-
-// Drag-to-move state
-let dragTarget = null;
-let isDragging = false;
-let dragStartX = 0;
-let dragStartY = 0;
-let dragOrigX1 = 0;
-let dragOrigY1 = 0;
-let dragOrigX2 = 0;
-let dragOrigY2 = 0;
-const DRAG_THRESHOLD = 5;
 
 // Transform variables
 const pins = [
@@ -70,8 +51,6 @@ photoInput.addEventListener('change', (e) => {
         bgImage.onload = () => {
             bgImage.style.display = 'block';
             bgImage.style.transform = 'none'; // reset previous transforms
-            zoom = 1; panX = 0; panY = 0;
-            applyZoomTransform();
             resizeStage();
             startTransformFlow();
         };
@@ -121,6 +100,7 @@ function startTransformFlow() {
     setPinPos(pins[1], w*0.9, h*0.1);
     setPinPos(pins[2], w*0.9, h*0.9);
     setPinPos(pins[3], w*0.1, h*0.9);
+    updatePinLines();
 }
 
 document.getElementById('btn-skip-transform').addEventListener('click', () => {
@@ -136,9 +116,9 @@ function endTransformFlow() {
     transformOverlay.style.display = 'none';
     transformDialog.style.display = 'none';
     document.getElementById('btn-wall').disabled = false;
-    document.getElementById('btn-feature').disabled = false;
     document.getElementById('btn-dimension').disabled = false;
     state = 'SELECT';
+    updateFeatureButtonState();
 }
 
 function applyTransform() {
@@ -180,93 +160,31 @@ pins.forEach(pin => {
 });
 document.addEventListener('mousemove', (e) => {
     if (!activePin) return;
-    const { x, y } = screenToCanvas(e.clientX, e.clientY);
+    const rect = stageContainer.getBoundingClientRect();
+    let x = e.clientX - rect.left;
+    let y = e.clientY - rect.top;
     setPinPos(activePin, x, y);
+    updatePinLines();
 });
-document.addEventListener('mouseup', () => { activePin = null; });
+document.addEventListener('mouseup', () => { 
+    activePin = null; 
+    activeDragDimId = null; 
+});
 
 function setPinPos(pin, x, y) {
     pin.style.left = `${x}px`;
     pin.style.top = `${y}px`;
 }
 
-
-// ============================================================
-// ZOOM & PAN
-// ============================================================
-
-/**
- * Converts screen (client) coordinates to canvas-local coordinates,
- * accounting for the current zoom level and pan offset.
- */
-function screenToCanvas(clientX, clientY) {
-    const rect = stageContainer.getBoundingClientRect();
-    // rect already reflects the CSS scale() transform, so we need
-    // to map back to the un-scaled coordinate space.
-    const x = (clientX - rect.left) / zoom;
-    const y = (clientY - rect.top) / zoom;
-    return { x, y };
+function updatePinLines() {
+    const polyline = document.getElementById('pinPolyline');
+    if (!polyline) return;
+    const coords = pins.map(p => `${parseFloat(p.style.left)},${parseFloat(p.style.top)}`);
+    // Close the polygon by repeating pin0
+    coords.push(`${parseFloat(pins[0].style.left)},${parseFloat(pins[0].style.top)}`);
+    polyline.setAttribute('points', coords.join(' '));
 }
 
-/** Applies the current zoom + pan as a CSS transform on #stage. */
-function applyZoomTransform() {
-    stageContainer.style.transformOrigin = '0 0';
-    stageContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
-    const indicator = document.getElementById('zoomIndicator');
-    if (indicator) indicator.textContent = `${Math.round(zoom * 100)}%`;
-}
-
-// Scroll-wheel zoom (cursor-centered)
-const viewport = document.getElementById('viewport');
-viewport.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const zoomFactor = 1.1;
-    const oldZoom = zoom;
-    if (e.deltaY < 0) {
-        zoom = Math.min(zoom * zoomFactor, 6);
-    } else {
-        zoom = Math.max(zoom / zoomFactor, 0.25);
-    }
-
-    // Keep the point under the cursor fixed:
-    // Find cursor position relative to viewport
-    const vpRect = viewport.getBoundingClientRect();
-    const cursorX = e.clientX - vpRect.left;
-    const cursorY = e.clientY - vpRect.top;
-
-    // Adjust pan so the world-point under the cursor stays put
-    panX = cursorX - (cursorX - panX) * (zoom / oldZoom);
-    panY = cursorY - (cursorY - panY) * (zoom / oldZoom);
-
-    applyZoomTransform();
-}, { passive: false });
-
-// Middle-mouse pan
-viewport.addEventListener('mousedown', (e) => {
-    if (e.button !== 1) return; // middle button only
-    e.preventDefault();
-    isPanning = true;
-    panStartX = e.clientX;
-    panStartY = e.clientY;
-    panStartPanX = panX;
-    panStartPanY = panY;
-    viewport.style.cursor = 'grabbing';
-});
-document.addEventListener('mousemove', (e) => {
-    if (!isPanning) return;
-    panX = panStartPanX + (e.clientX - panStartX);
-    panY = panStartPanY + (e.clientY - panStartY);
-    applyZoomTransform();
-});
-document.addEventListener('mouseup', (e) => {
-    if (e.button === 1 && isPanning) {
-        isPanning = false;
-        viewport.style.cursor = '';
-    }
-});
-
-// Prevent middle-click auto-scroll browser behavior
-viewport.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
 
 // ============================================================
 // CORE INTERACTION (DRAWING & SELECTION)
@@ -274,48 +192,31 @@ viewport.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefa
 
 canvas.addEventListener('mousedown', handleMouseDown);
 canvas.addEventListener('mousemove', handleMouseMove);
-canvas.addEventListener('mouseup', handleMouseUp);
-
-function handleMouseUp(e) {
-    if (!dragTarget) return;
-    if (isDragging) {
-        syncRealFromPixels(dragTarget);
-        recomputeDimValues(dragTarget);
-        selectFeature(dragTarget.id);
-        buildSidebar();
-        canvas.style.cursor = 'move';
-    } else {
-        // Was just a click, not a drag
-        selectFeature(dragTarget.id);
-    }
-    dragTarget = null;
-    isDragging = false;
-}
 
 function handleMouseDown(e) {
     if (state === 'TRANSFORM') return;
-    if (isPanning) return;
-    const { x, y } = screenToCanvas(e.clientX, e.clientY);
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
     // --- Selection Mode ---
     if (state === 'SELECT') {
-        const hit = getFeatureAtPoint(x, y);
-        if (hit && hit.type !== 'wall') {
-            // Start potential drag — don't select yet
-            dragTarget = hit;
-            isDragging = false;
+        // Check dimensions first (small targets that sit on top of large feature rects)
+        const dimHit = getDimensionAtPoint(x, y);
+        if (dimHit) {
+            selectDimension(dimHit.id);
+            activeDragDimId = dimHit.id;
             dragStartX = x;
             dragStartY = y;
-            dragOrigX1 = hit.x1;
-            dragOrigY1 = hit.y1;
-            dragOrigX2 = hit.x2;
-            dragOrigY2 = hit.y2;
-        } else if (hit) {
-            // Wall — select only, no drag
-            selectFeature(hit.id);
-        } else {
-            selectFeature(null);
+            return;
         }
+        const hit = getFeatureAtPoint(x, y);
+        if (hit) {
+            selectFeature(hit.id);
+            return;
+        }
+        // Nothing hit — deselect all
+        selectFeature(null);
         return;
     }
 
@@ -344,6 +245,8 @@ function handleMouseDown(e) {
                 const addRef = confirm(`This axis is already fully constrained. The calculated distance is ${calcDist}".\n\nWould you like to add this as a [Reference Dimension]?`);
                 if (addRef) {
                     addDimensionObj(calcDist, true);
+                    render();
+                    buildSidebar();
                 } else {
                     dimLine1 = null; dimLine2 = null; state = 'SELECT'; render();
                 }
@@ -351,8 +254,9 @@ function handleMouseDown(e) {
             }
 
             const value = prompt('Enter the distance between these two lines (in inches):');
-            if (value && !isNaN(parseFloat(value))) {
-                addDimensionObj(parseFloat(value), false);
+            const parsed = parseDimension(value);
+            if (parsed !== null) {
+                addDimensionObj(parsed, false);
                 recalcRealPositions();
                 syncPixelsFromReal();
             } else {
@@ -372,7 +276,8 @@ function handleMouseDown(e) {
             currentFeature = {
                 id: Date.now(), type: state === 'DRAWING_WALL' ? 'wall' : 'feature',
                 label: '', x1: x, y1: y, x2: x, y2: y,
-                realW: 0, realH: 0, realX: 0, realY: 0
+                realW: 0, realH: 0, realX: 0, realY: 0,
+                isWidthDriven: false, isHeightDriven: false
             };
         } else {
             currentFeature.x2 = x;
@@ -380,70 +285,69 @@ function handleMouseDown(e) {
             normalizeRect(currentFeature);
 
             const isWall = currentFeature.type === 'wall';
-            const label = prompt('Enter a label:', isWall ? 'Wall' : 'Feature');
-            const w = prompt('Enter REAL width (inches):');
-            const h = prompt('Enter REAL height (inches):');
-            
-            if (label) currentFeature.label = label;
-            if (w && !isNaN(parseFloat(w))) currentFeature.realW = parseFloat(w);
-            if (h && !isNaN(parseFloat(h))) currentFeature.realH = parseFloat(h);
 
             if (isWall) {
-                // Wall defines the scale reference for all features.
-                // The pixel rect the user drew IS the wall — compute scale from it.
-                computeScale(currentFeature);
+                // Wall requires manual dimensions (establishes scale)
+                const label = prompt('Enter a label:', 'Wall');
+                const w = prompt('Enter REAL width (inches):');
+                const h = prompt('Enter REAL height (inches):');
+                if (label) currentFeature.label = label;
+                const parsedW = parseDimension(w);
+                const parsedH = parseDimension(h);
+                if (parsedW !== null) currentFeature.realW = parsedW;
+                if (parsedH !== null) currentFeature.realH = parsedH;
             } else {
-                // Resize the drawn rect so it matches the entered real dims at scale.
-                // The top-left click point (x1, y1) stays fixed as an anchor.
-                applyScaleToFeature(currentFeature);
+                // Feature dimensions are auto-calculated from wall scale
+                const featureCount = features.filter(f => f.type === 'feature').length;
+                currentFeature.label = `Feature ${featureCount + 1}`;
+                autoCalcDims(currentFeature);
             }
 
             features.push(currentFeature);
             
             // Sort features so walls are always at the beginning (index 0)
-            // This ensures they are drawn first (in the background)
+            // This ensures they are drawn first (in the background) 
             // and hit-tested last (so smaller features on top are clickable).
             features.sort((a, b) => {
                 if (a.type === 'wall' && b.type !== 'wall') return -1;
                 if (b.type === 'wall' && a.type !== 'wall') return 1;
-                return 0;
+                return 0; // maintain relative order of others
             });
 
             selectFeature(currentFeature.id);
+            updateFeatureButtonState();
 
             currentFeature = null;
             state = 'SELECT';
-            updateStatus('Select objects or draw more.');
+            updateStatus(isWall ? 'Wall placed. You can now add features.' : 'Feature placed. Edit details in sidebar.');
+            recalcRealPositions();
+            syncPixelsFromReal();
             render();
         }
     }
 }
 
 function handleMouseMove(e) {
-    const { x, y } = screenToCanvas(e.clientX, e.clientY);
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
 
-    // --- Drag-to-move logic ---
-    if (dragTarget) {
-        const dx = x - dragStartX;
-        const dy = y - dragStartY;
-        if (!isDragging && (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD)) {
-            isDragging = true;
-            canvas.style.cursor = 'grabbing';
-        }
-        if (isDragging) {
-            dragTarget.x1 = dragOrigX1 + dx;
-            dragTarget.y1 = dragOrigY1 + dy;
-            dragTarget.x2 = dragOrigX2 + dx;
-            dragTarget.y2 = dragOrigY2 + dy;
+    if (activeDragDimId) {
+        const dim = dimensions.find(d => d.id === activeDragDimId);
+        if (dim) {
+            const f1 = features.find(f => f.id === dim.from.featureId);
+            const e1 = getEdges(f1)[dim.from.edge];
+            
+            if (e1.orientation === 'vertical') {
+                dim.offset += (y - dragStartY);
+            } else {
+                dim.offset += (x - dragStartX);
+            }
+            dragStartX = x;
+            dragStartY = y;
             render();
+            return;
         }
-        return;
-    }
-
-    // --- Hover cursor in SELECT mode ---
-    if (state === 'SELECT') {
-        const hover = getFeatureAtPoint(x, y);
-        canvas.style.cursor = (hover && hover.type !== 'wall') ? 'move' : 'crosshair';
     }
 
     if (!currentFeature && state !== 'DIM_SELECT_LINE1' && state !== 'DIM_SELECT_LINE2') return;
@@ -462,7 +366,8 @@ function addDimensionObj(value, isReference) {
         to: { ...dimLine2 },
         value: value,
         visible: true,
-        isReference: isReference
+        isReference: isReference,
+        offset: 0
     });
     dimLine1 = null; dimLine2 = null; state = 'SELECT';
 }
@@ -484,12 +389,22 @@ function getFeatureAtPoint(x, y) {
 
 function selectFeature(id) {
     selectedFeatureId = id;
+    selectedDimId = null; // Clear dimension selection
     if (id) {
         btnDelete.style.display = 'inline-block';
         btnDelete.disabled = false;
-    } else {
+    } else if (!selectedDimId) {
         btnDelete.style.display = 'none';
     }
+    render();
+    buildSidebar();
+}
+
+function selectDimension(id) {
+    selectedDimId = id;
+    selectedFeatureId = null; // Clear feature selection
+    btnDelete.style.display = 'inline-block';
+    btnDelete.disabled = false;
     render();
     buildSidebar();
 }
@@ -498,9 +413,20 @@ function selectFeature(id) {
 // ============================================================
 // DELETION LOGIC (CASCADING)
 // ============================================================
-btnDelete.addEventListener('click', deleteSelectedFeature);
+btnDelete.addEventListener('click', deleteSelected);
 
-function deleteSelectedFeature() {
+function deleteSelected() {
+    if (selectedDimId) {
+        // Delete selected dimension
+        dimensions = dimensions.filter(d => d.id !== selectedDimId);
+        selectedDimId = null;
+        btnDelete.style.display = 'none';
+        recalcRealPositions();
+        syncPixelsFromReal();
+        render();
+        buildSidebar();
+        return;
+    }
     if (!selectedFeatureId) return;
     
     // Cascading Delete: Remove any dimensions pointing to this feature
@@ -516,6 +442,7 @@ function deleteSelectedFeature() {
     selectFeature(null);
     recalcRealPositions();
     syncPixelsFromReal();
+    updateFeatureButtonState();
     render();
 }
 
@@ -527,10 +454,6 @@ document.getElementById('btn-wall').addEventListener('click', () => { state = 'D
 document.getElementById('btn-feature').addEventListener('click', () => { state = 'DRAWING_FEATURE'; currentFeature = null; });
 document.getElementById('btn-dimension').addEventListener('click', () => { state = 'DIM_SELECT_LINE1'; });
 document.getElementById('btn-export').addEventListener('click', exportDXF);
-document.getElementById('btn-reset-view').addEventListener('click', () => {
-    zoom = 1; panX = 0; panY = 0;
-    applyZoomTransform();
-});
 
 
 // ============================================================
@@ -544,7 +467,7 @@ function render() {
     if (currentFeature) drawRect(currentFeature, true, false);
 
     if (showDimensions) {
-        dimensions.forEach(d => { if (d.visible) drawDimension(d); });
+        dimensions.forEach(d => { if (d.visible) drawDimension(d, d.id === selectedDimId); });
     }
 
     if (state === 'DIM_SELECT_LINE1' || state === 'DIM_SELECT_LINE2') highlightEdges();
@@ -605,7 +528,7 @@ function buildSidebar() {
         `;
     });
 
-    // Check if we need to append the Editor below the ledger
+    // Check if we need to append the Feature Editor below the ledger
     if (selectedFeatureId) {
         const f = features.find(feat => feat.id === selectedFeatureId);
         if (f) {
@@ -617,19 +540,66 @@ function buildSidebar() {
                         <input id="edit-label" type="text" value="${f.label}" style="width:100%;padding:0.5rem;background:#0f172a;color:white;border:1px solid #334155;border-radius:4px">
                     </div>
                     <div style="margin-bottom:1rem; display:flex; gap:0.5rem">
-                        <div>
-                            <label style="color:#94a3b8;font-size:0.8rem">Width (in)</label>
-                            <input id="edit-w" type="number" value="${f.realW}" style="width:100%;padding:0.5rem;background:#0f172a;color:white;border:1px solid #334155;border-radius:4px">
+                        <div style="flex:1">
+                            <label style="color:#94a3b8;font-size:0.8rem; display:flex; justify-content:space-between; align-items:center;">
+                                Width (in)
+                                <span style="font-size:0.65rem; color:${f.isWidthDriven ? '#38bdf8' : '#94a3b8'}">
+                                    <input type="checkbox" id="check-w-driven" ${f.isWidthDriven ? 'checked' : ''}> Driven
+                                </span>
+                            </label>
+                            <input id="edit-w" type="text" value="${f.realW}" 
+                                style="width:100%;padding:0.5rem;background:#0f172a;color:${f.isWidthDriven ? '#38bdf8' : 'white'};border:1px solid #334155;border-radius:4px" 
+                                placeholder="e.g. 35+1/2" ${f.isWidthDriven ? 'readonly' : ''}>
                         </div>
-                        <div>
-                            <label style="color:#94a3b8;font-size:0.8rem">Height (in)</label>
-                            <input id="edit-h" type="number" value="${f.realH}" style="width:100%;padding:0.5rem;background:#0f172a;color:white;border:1px solid #334155;border-radius:4px">
+                        <div style="flex:1">
+                            <label style="color:#94a3b8;font-size:0.8rem; display:flex; justify-content:space-between; align-items:center;">
+                                Height (in)
+                                <span style="font-size:0.65rem; color:${f.isHeightDriven ? '#38bdf8' : '#94a3b8'}">
+                                    <input type="checkbox" id="check-h-driven" ${f.isHeightDriven ? 'checked' : ''}> Driven
+                                </span>
+                            </label>
+                            <input id="edit-h" type="text" value="${f.realH}" 
+                                style="width:100%;padding:0.5rem;background:#0f172a;color:${f.isHeightDriven ? '#38bdf8' : 'white'};border:1px solid #334155;border-radius:4px" 
+                                placeholder="e.g. 35+1/2" ${f.isHeightDriven ? 'readonly' : ''}>
                         </div>
                     </div>
                     <div style="color:#94a3b8;font-size:0.8rem;margin-bottom:1rem">
                         X: ${f.realX.toFixed(2)}" | Y: ${f.realY.toFixed(2)}"
                     </div>
                     <button id="btn-save-edit" class="btn primary" style="width:100%">Save Edits</button>
+                </div>
+            `;
+        }
+    }
+
+    // Dimension Editor (when a dimension is selected)
+    if (selectedDimId) {
+        const dim = dimensions.find(d => d.id === selectedDimId);
+        if (dim) {
+            const f1 = features.find(f => f.id === dim.from.featureId);
+            const f2 = features.find(f => f.id === dim.to.featureId);
+            const fromLabel = f1 ? (f1.label || f1.type) : '?';
+            const toLabel = f2 ? (f2.label || f2.type) : '?';
+            const isRef = dim.isReference;
+            html += `
+                <div style="margin-top:2rem; border-top: 1px solid #634a15; padding-top:1rem;">
+                    <h3 class="side-title" style="color:#facc15">${isRef ? 'Reference Dimension' : 'Edit Dimension'}</h3>
+                    <div style="color:#94a3b8;font-size:0.8rem;margin-bottom:0.75rem">
+                        ${fromLabel} (${dim.from.edge}) → ${toLabel} (${dim.to.edge})
+                    </div>
+                    <div style="margin-bottom:1rem">
+                        <label style="color:#94a3b8;font-size:0.8rem">Distance (in)</label>
+                        <input id="edit-dim-value" type="text" value="${dim.value}"
+                            style="width:100%;padding:0.5rem;background:#0f172a;color:${isRef ? '#64748b' : '#facc15'};border:1px solid ${isRef ? '#334155' : '#634a15'};border-radius:4px;font-weight:bold"
+                            placeholder="e.g. 35+1/2" ${isRef ? 'disabled' : ''}>
+                    </div>
+                    ${isRef ? `
+                        <div style="color:#94a3b8;font-size:0.8rem;font-style:italic;margin-bottom:1rem;padding:0.5rem;background:rgba(250,204,21,0.05);border-radius:4px;border:1px solid #334155">
+                            🔒 This value is calculated from driving dimensions and cannot be edited. Delete a driving dimension first to unlock this axis.
+                        </div>
+                    ` : `
+                        <button id="btn-save-dim" class="btn primary" style="width:100%;background:#facc15;color:#0f172a">Save Dimension</button>
+                    `}
                 </div>
             `;
         }
@@ -662,21 +632,78 @@ function buildSidebar() {
         btnSave.addEventListener('click', () => {
             const f = features.find(feat => feat.id === selectedFeatureId);
             f.label = document.getElementById('edit-label').value;
-            f.realW = parseFloat(document.getElementById('edit-w').value);
-            f.realH = parseFloat(document.getElementById('edit-h').value);
+            
+            const newW = parseDimension(document.getElementById('edit-w').value);
+            const newH = parseDimension(document.getElementById('edit-h').value);
+            
+            if (!f.isWidthDriven && newW !== null) f.realW = newW;
+            if (!f.isHeightDriven && newH !== null) f.realH = newH;
+            
             if (f.type === 'wall') {
-                // Wall dims changed — recompute scale and resize all features to match.
-                computeScale(f);
-                rescaleAllFeatures();
+                // Wall scale changed — re-snap all features to new scale
+                features.forEach(feat => { if (feat.type === 'feature') snapToScale(feat); });
             } else {
-                // A single feature's dims changed — resize just this one.
-                applyScaleToFeature(f);
+                snapToScale(f);
             }
             recalcRealPositions();
             syncPixelsFromReal();
             render();
             buildSidebar();
             updateStatus('Edits saved.');
+        });
+    }
+
+    // Driven checkbox listeners
+    const checkW = document.getElementById('check-w-driven');
+    const checkH = document.getElementById('check-h-driven');
+    if (checkW) {
+        checkW.addEventListener('change', (e) => {
+            const f = features.find(feat => feat.id === selectedFeatureId);
+            if (f) {
+                f.isWidthDriven = e.target.checked;
+                if (!f.isWidthDriven) {
+                    // Sync realW to current calculated width and demote over-constraints
+                    f.realW = Math.round(Math.abs(f.edges.right - f.edges.left) * 100) / 100;
+                    autoDemote(f.id, 'x');
+                }
+                recalcRealPositions();
+                syncPixelsFromReal();
+                render();
+                buildSidebar();
+            }
+        });
+    }
+    if (checkH) {
+        checkH.addEventListener('change', (e) => {
+            const f = features.find(feat => feat.id === selectedFeatureId);
+            if (f) {
+                f.isHeightDriven = e.target.checked;
+                if (!f.isHeightDriven) {
+                    // Sync realH to current calculated height and demote over-constraints
+                    f.realH = Math.round(Math.abs(f.edges.top - f.edges.bottom) * 100) / 100;
+                    autoDemote(f.id, 'y');
+                }
+                recalcRealPositions();
+                syncPixelsFromReal();
+                render();
+                buildSidebar();
+            }
+        });
+    }
+
+    // Dimension save handler
+    const btnSaveDim = document.getElementById('btn-save-dim');
+    if (btnSaveDim && selectedDimId) {
+        btnSaveDim.addEventListener('click', () => {
+            const dim = dimensions.find(d => d.id === selectedDimId);
+            if (!dim) return;
+            const newVal = parseDimension(document.getElementById('edit-dim-value').value);
+            if (newVal !== null) dim.value = newVal;
+            recalcRealPositions();
+            syncPixelsFromReal();
+            render();
+            buildSidebar();
+            updateStatus('Dimension updated.');
         });
     }
 
@@ -687,107 +714,7 @@ function buildSidebar() {
 }
 
 // ============================================================
-// SCALE UTILITIES
-// ============================================================
-
-/**
- * Computes pixels-per-inch scale from the wall's drawn pixel rect and real dims.
- * Called once when the wall is finalized, and again if wall dims are edited.
- */
-function computeScale(wall) {
-    const pw = wall.x2 - wall.x1;
-    const ph = wall.y2 - wall.y1;
-    if (wall.realW > 0 && wall.realH > 0 && pw > 0 && ph > 0) {
-        scaleX = pw / wall.realW; // px per inch, horizontal axis
-        scaleY = ph / wall.realH; // px per inch, vertical axis
-    }
-}
-
-/**
- * Resizes a feature's pixel rect (anchored at x1, y1) so its drawn size
- * matches its real dimensions at the current scale.
- */
-function applyScaleToFeature(f) {
-    if (scaleX && scaleY && f.realW > 0 && f.realH > 0) {
-        f.x2 = f.x1 + f.realW * scaleX;
-        f.y2 = f.y1 + f.realH * scaleY;
-    }
-}
-
-/**
- * Re-applies scale to all non-wall features.
- * Called when the wall dims are edited so everything stays in proportion.
- */
-function rescaleAllFeatures() {
-    features.forEach(f => {
-        if (f.type !== 'wall') {
-            applyScaleToFeature(f);
-        }
-    });
-}
-
-/**
- * After dragging: derives real position from pixel position.
- * Uses inverse scale from the wall's drawn position.
- */
-function syncRealFromPixels(f) {
-    const wall = features.find(w => w.type === 'wall');
-    if (!wall || !scaleX || !scaleY) return;
-    f.realX = (f.x1 - wall.x1) / scaleX;
-    f.realY = (f.y1 - wall.y1) / scaleY;
-}
-
-/**
- * After constraint solver: snaps feature pixel positions to match
- * their solved real positions, using scale and wall origin.
- */
-function syncPixelsFromReal() {
-    const wall = features.find(f => f.type === 'wall');
-    if (!wall || !scaleX || !scaleY) return;
-    features.forEach(f => {
-        if (f.type === 'wall') return;
-        if (f.resolvedX) {
-            f.x1 = wall.x1 + f.realX * scaleX;
-            f.x2 = f.x1 + f.realW * scaleX;
-        }
-        if (f.resolvedY) {
-            f.y1 = wall.y1 + f.realY * scaleY;
-            f.y2 = f.y1 + f.realH * scaleY;
-        }
-    });
-}
-
-/**
- * After dragging: recomputes the value of every non-reference
- * dimension connected to the moved feature.
- */
-function recomputeDimValues(movedFeature) {
-    dimensions.forEach(dim => {
-        if (dim.isReference) return;
-        if (dim.from.featureId !== movedFeature.id &&
-            dim.to.featureId !== movedFeature.id) return;
-
-        const f1 = features.find(f => f.id === dim.from.featureId);
-        const f2 = features.find(f => f.id === dim.to.featureId);
-        if (!f1 || !f2) return;
-
-        const e1 = dim.from.edge;
-        const e2 = dim.to.edge;
-
-        if (['left', 'right'].includes(e1)) {
-            const p1 = f1.realX + (e1 === 'right' ? f1.realW : 0);
-            const p2 = f2.realX + (e2 === 'right' ? f2.realW : 0);
-            dim.value = parseFloat(Math.abs(p1 - p2).toFixed(2));
-        } else {
-            const p1 = f1.realY + (e1 === 'top' ? f1.realH : 0);
-            const p2 = f2.realY + (e2 === 'top' ? f2.realH : 0);
-            dim.value = parseFloat(Math.abs(p1 - p2).toFixed(2));
-        }
-    });
-}
-
-// ============================================================
-// UTILITIES & PREVIOUS MATH
+// UTILITIES & PREVIOUS MATH (Copied from previous valid state)
 // ============================================================
 function normalizeRect(f) {
     const minX = Math.min(f.x1, f.x2); const maxX = Math.max(f.x1, f.x2);
@@ -799,6 +726,156 @@ function updateStatus(msg) {
     logo.textContent = msg;
     clearTimeout(logo._timer);
     logo._timer = setTimeout(() => { logo.textContent = 'ROOM MAPPER PRO'; }, 3000);
+}
+
+// --- Dimension Parser (supports fractions like "35+1/2" or "35 1/2") ---
+function parseDimension(str) {
+    if (str === null || str === undefined) return null;
+    str = String(str).trim();
+    if (str === '') return null;
+
+    // Pure decimal/integer: "35" or "35.5"
+    if (/^-?\d+(\.\d+)?$/.test(str)) return parseFloat(str);
+
+    // Pure fraction: "1/2" or "3/4"
+    const pureMatch = str.match(/^(-?\d+)\/(\d+)$/);
+    if (pureMatch) {
+        const denom = parseFloat(pureMatch[2]);
+        return denom === 0 ? null : parseFloat(pureMatch[1]) / denom;
+    }
+
+    // Mixed number: "35+1/2", "35 1/2", "35-1/2" (meaning 35 and 1/2)
+    const mixedMatch = str.match(/^(-?\d+(?:\.\d+)?)\s*[+ ]\s*(\d+)\/(\d+)$/);
+    if (mixedMatch) {
+        const whole = parseFloat(mixedMatch[1]);
+        const num = parseFloat(mixedMatch[2]);
+        const denom = parseFloat(mixedMatch[3]);
+        if (denom === 0) return null;
+        return whole + (whole < 0 ? -1 : 1) * (num / denom);
+    }
+
+    // Fallback to parseFloat for partial matches like "35.5in"
+    const fallback = parseFloat(str);
+    return isNaN(fallback) ? null : fallback;
+}
+
+// --- Scale Utilities ---
+function getScale() {
+    const wall = features.find(f => f.type === 'wall');
+    if (!wall || !wall.realW || !wall.realH) return null;
+    const pixelW = wall.x2 - wall.x1;
+    const pixelH = wall.y2 - wall.y1;
+    return { x: pixelW / wall.realW, y: pixelH / wall.realH };
+}
+
+function autoCalcDims(feature) {
+    const scale = getScale();
+    const wall = features.find(f => f.type === 'wall');
+    if (!scale || !wall) return;
+    
+    const pixelW = feature.x2 - feature.x1;
+    const pixelH = feature.y2 - feature.y1;
+    
+    // Size
+    feature.realW = Math.round(pixelW / scale.x * 100) / 100;
+    feature.realH = Math.round(pixelH / scale.y * 100) / 100;
+    
+    // Position relative to wall anchor (bottom-left)
+    feature.realX = Math.round((feature.x1 - wall.x1) / scale.x * 100) / 100;
+    feature.realY = Math.round((wall.y2 - feature.y2) / scale.y * 100) / 100;
+}
+
+function snapToScale(feature) {
+    const scale = getScale();
+    if (!scale) return;
+    feature.x2 = feature.x1 + feature.realW * scale.x;
+    feature.y2 = feature.y1 + feature.realH * scale.y;
+}
+
+function updateFeatureButtonState() {
+    const hasWall = features.some(f => f.type === 'wall');
+    document.getElementById('btn-feature').disabled = !hasWall;
+}
+
+// --- Parametric Sync: Push real-world positions back to pixel coords ---
+function syncPixelsFromReal() {
+    const scale = getScale();
+    if (!scale) return;
+    const wall = features.find(f => f.type === 'wall');
+    if (!wall) return;
+
+    features.forEach(f => {
+        if (f.type === 'wall') return; 
+
+        // Use resolved edges to update pixel coordinates
+        if (f.edgesResolved.left) {
+            f.x1 = wall.x1 + f.edges.left * scale.x;
+        }
+        if (f.edgesResolved.right) {
+            f.x2 = wall.x1 + f.edges.right * scale.x;
+        }
+        if (f.edgesResolved.bottom) {
+            // Real Y=0 is wall bottom; pixel Y increases downward
+            f.y2 = wall.y2 - f.edges.bottom * scale.y;
+        }
+        if (f.edgesResolved.top) {
+            f.y1 = wall.y2 - f.edges.top * scale.y;
+        }
+
+        // If one edge is NOT resolved but the size is fixed, calculate from the other edge
+        if (f.edgesResolved.left && !f.edgesResolved.right && !f.isWidthDriven) {
+            f.x2 = f.x1 + f.realW * scale.x;
+        } else if (!f.edgesResolved.left && f.edgesResolved.right && !f.isWidthDriven) {
+            f.x1 = f.x2 - f.realW * scale.x;
+        }
+
+        if (f.edgesResolved.bottom && !f.edgesResolved.top && !f.isHeightDriven) {
+            f.y1 = f.y2 - f.realH * scale.y;
+        } else if (!f.edgesResolved.bottom && f.edgesResolved.top && !f.isHeightDriven) {
+            f.y2 = f.y1 + f.realH * scale.y;
+        }
+        
+        // Update realX/realY for compatibility with other functions
+        f.realX = f.edges.left;
+        f.realY = f.edges.bottom;
+    });
+}
+
+// --- Dimension Hit Detection ---
+function getDimensionAtPoint(px, py) {
+    const hitRadius = 12;
+    for (let i = dimensions.length - 1; i >= 0; i--) {
+        const dim = dimensions[i];
+        if (!dim.visible) continue;
+        const f1 = features.find(f => f.id === dim.from.featureId);
+        const f2 = features.find(f => f.id === dim.to.featureId);
+        if (!f1 || !f2) continue;
+
+        const e1 = getEdges(f1)[dim.from.edge];
+        const e2 = getEdges(f2)[dim.to.edge];
+        const offset = dim.offset || 0;
+
+        if (e1.orientation === 'vertical') {
+            const midY = (Math.max(e1.y1, e2.y1) + Math.min(e1.y2, e2.y2)) / 2 + offset;
+            const leftX = Math.min(e1.x1, e2.x1);
+            const rightX = Math.max(e1.x1, e2.x1);
+            // Check proximity to the horizontal dim line
+            if (px >= leftX - hitRadius && px <= rightX + hitRadius &&
+                Math.abs(py - midY) < hitRadius) {
+                return dim;
+            }
+        } else {
+            const midX = (Math.max(e1.x1, e2.x1) + Math.min(e1.x2, e2.x2)) / 2 + offset;
+            const topY = Math.min(e1.y1, e2.y1);
+            const botY = Math.max(e1.y1, e2.y1);
+            // Check proximity to the vertical dim line
+            if (py >= topY - hitRadius && py <= botY + hitRadius &&
+                Math.abs(px - midX) < hitRadius) {
+                return dim;
+            }
+        }
+    }
+    return null;
 }
 function areLinesParallel(edge1, edge2) {
     const v = ['left', 'right']; const h = ['top', 'bottom'];
@@ -836,17 +913,22 @@ function distToSegment(px, py, seg) {
 function isAxisConstrained(featureId, axis) {
     const wall = features.find(f => f.type === 'wall');
     if (wall && featureId === wall.id) return true;
-    return dimensions.some(d => {
-        if (d.isReference) return false;
-        if (d.from.featureId !== featureId && d.to.featureId !== featureId) return false;
-        const edge = d.from.featureId === featureId ? d.from.edge : d.to.edge;
-        if (axis === 'x') return ['left', 'right'].includes(edge);
-        if (axis === 'y') return ['top', 'bottom'].includes(edge);
-        return false;
-    });
+    
+    const f = features.find(feat => feat.id === featureId);
+    if (!f) return false;
+
+    // We only care if it's constrained by an actual dimension (from edgesConstrained)
+    if (axis === 'x') {
+        if (f.isWidthDriven) return f.edgesConstrained.left && f.edgesConstrained.right;
+        return f.edgesConstrained.left || f.edgesConstrained.right;
+    }
+    if (axis === 'y') {
+        if (f.isHeightDriven) return f.edgesConstrained.top && f.edgesConstrained.bottom;
+        return f.edgesConstrained.top || f.edgesConstrained.bottom;
+    }
+    return false;
 }
-function getCalculatedDistance(f1Id, e1Edge, f2Id, e2Edge) {
-    recalcRealPositions();
+function calcDistanceBetweenFeatures(f1Id, e1Edge, f2Id, e2Edge) {
     const f1 = features.find(f => f.id === f1Id); const f2 = features.find(f => f.id === f2Id);
     if (!f1 || !f2) return 0;
     let p1, p2;
@@ -857,18 +939,48 @@ function getCalculatedDistance(f1Id, e1Edge, f2Id, e2Edge) {
     }
     return Math.abs(p1 - p2);
 }
+function getCalculatedDistance(f1Id, e1Edge, f2Id, e2Edge) {
+    recalcRealPositions();
+    const dist = calcDistanceBetweenFeatures(f1Id, e1Edge, f2Id, e2Edge);
+    return Math.round(dist * 1000) / 1000;
+}
+function autoDemote(featureId, axis) {
+    const axisEdges = axis === 'x' ? ['left', 'right'] : ['top', 'bottom'];
+    const secondaryEdge = axis === 'x' ? 'right' : 'top';
+    
+    // Find driving dimensions for this feature and axis
+    const activeDims = dimensions.filter(d => !d.isReference && 
+        ((d.from.featureId === featureId && axisEdges.includes(d.from.edge)) || 
+         (d.to.featureId === featureId && axisEdges.includes(d.to.edge)))
+    );
+    
+    if (activeDims.length > 1) {
+        // Preference: Demote the one attached to the secondary edge (Right or Top)
+        const toDemote = activeDims.find(d => 
+            (d.from.featureId === featureId && d.from.edge === secondaryEdge) || 
+            (d.to.featureId === featureId && d.to.edge === secondaryEdge)
+        );
+        if (toDemote) {
+            toDemote.isReference = true;
+            updateStatus(`Over-constraint: ${secondaryEdge} dimension demoted to Reference.`);
+        }
+    }
+}
 function recalcRealPositions() {
     const wall = features.find(f => f.type === 'wall');
     if (!wall) return;
     
     // Reset all non-wall positions to ensure clean recalculation
     features.forEach(f => {
+        f.edges = { left: 0, right: 0, top: 0, bottom: 0 };
+        f.edgesResolved = { left: false, right: false, top: false, bottom: false };
+        f.edgesConstrained = { left: false, right: false, top: false, bottom: false };
+        
         if (f.type === 'wall') {
+            f.edges = { left: 0, right: f.realW, top: f.realH, bottom: 0 };
+            f.edgesResolved = { left: true, right: true, top: true, bottom: true };
+            f.edgesConstrained = { left: true, right: true, top: true, bottom: true };
             f.realX = 0; f.realY = 0;
-            f.resolvedX = true; f.resolvedY = true;
-        } else {
-            f.realX = 0; f.realY = 0;
-            f.resolvedX = false; f.resolvedY = false;
         }
     });
 
@@ -878,10 +990,11 @@ function recalcRealPositions() {
     let madeProgress = true;
     let passes = 0;
 
-    while (madeProgress && passes < 10) {
+    while (madeProgress && passes < 20) {
         madeProgress = false;
         passes++;
 
+        // 1. Resolve driving dimensions
         activeDims.forEach(dim => {
             const f1 = features.find(f => f.id === dim.from.featureId);
             const f2 = features.find(f => f.id === dim.to.featureId);
@@ -889,46 +1002,139 @@ function recalcRealPositions() {
 
             const e1 = dim.from.edge;
             const e2 = dim.to.edge;
+            const isY = ['top', 'bottom'].includes(e1);
 
-            // X-Axis (Horizontal constraints using Vertical edges)
-            if (['left', 'right'].includes(e1)) {
-                if (f1.resolvedX && !f2.resolvedX) {
-                    let baseX = f1.realX + (e1 === 'right' ? f1.realW : 0);
-                    f2.realX = baseX + (e2 === 'left' ? dim.value : dim.value - f2.realW);
-                    f2.resolvedX = true;
+            // Use pixel-based hints to determine direction (sign)
+            // For X axis, if f2.edge is visually right of f1.edge, real value should be higher
+            // For Y axis, if f2.edge is visually higher (smaller pixel Y), real value should be higher
+            const p1 = getEdgePixelValue(f1, e1);
+            const p2 = getEdgePixelValue(f2, e2);
+            
+            let direction = p2 >= p1 ? 1 : -1;
+            if (isY) direction *= -1; // Flip for Y axis because pixel Y is inverted vs real Y
+
+            if (f1.edgesResolved[e1] && !f2.edgesResolved[e2]) {
+                f2.edges[e2] = f1.edges[e1] + (direction * dim.value);
+                f2.edgesResolved[e2] = true;
+                f2.edgesConstrained[e2] = true;
+                madeProgress = true;
+            } else if (!f1.edgesResolved[e1] && f2.edgesResolved[e2]) {
+                f1.edges[e1] = f2.edges[e2] - (direction * dim.value);
+                f1.edgesResolved[e1] = true;
+                f1.edgesConstrained[e1] = true;
+                madeProgress = true;
+            }
+        });
+
+        // 2. Resolve internal feature consistency (Fixed Size Logic)
+        features.forEach(f => {
+            if (f.type === 'wall') return;
+
+            // X-Axis
+            if (!f.isWidthDriven) {
+                if (f.edgesResolved.left && !f.edgesResolved.right) {
+                    f.edges.right = f.edges.left + f.realW;
+                    f.edgesResolved.right = true;
+                    f.edgesConstrained.right = f.edgesConstrained.left;
                     madeProgress = true;
-                } 
-                else if (!f1.resolvedX && f2.resolvedX) {
-                    let baseX = f2.realX + (e2 === 'right' ? f2.realW : 0);
-                    f1.realX = baseX + (e1 === 'left' ? dim.value : dim.value - f1.realW);
-                    f1.resolvedX = true;
+                } else if (!f.edgesResolved.left && f.edgesResolved.right) {
+                    f.edges.left = f.edges.right - f.realW;
+                    f.edgesResolved.left = true;
+                    f.edgesConstrained.left = f.edgesConstrained.right;
                     madeProgress = true;
+                }
+            } else {
+                // Driven width: calculate realW if both edges resolved
+                if (f.edgesResolved.left && f.edgesResolved.right) {
+                    const oldW = f.realW;
+                    f.realW = Math.abs(f.edges.right - f.edges.left);
+                    if (Math.abs(f.realW - oldW) > 0.001) madeProgress = true;
                 }
             }
 
-            // Y-Axis (Vertical constraints using Horizontal edges)
-            if (['top', 'bottom'].includes(e1)) {
-                if (f1.resolvedY && !f2.resolvedY) {
-                    let baseY = f1.realY + (e1 === 'top' ? f1.realH : 0);
-                    f2.realY = baseY + (e2 === 'bottom' ? dim.value : dim.value - f2.realH);
-                    f2.resolvedY = true;
+            // Y-Axis
+            if (!f.isHeightDriven) {
+                if (f.edgesResolved.bottom && !f.edgesResolved.top) {
+                    f.edges.top = f.edges.bottom + f.realH;
+                    f.edgesResolved.top = true;
+                    f.edgesConstrained.top = f.edgesConstrained.bottom;
                     madeProgress = true;
-                } 
-                else if (!f1.resolvedY && f2.resolvedY) {
-                    let baseY = f2.realY + (e2 === 'top' ? f2.realH : 0);
-                    f1.realY = baseY + (e1 === 'bottom' ? dim.value : dim.value - f1.realH);
-                    f1.resolvedY = true;
+                } else if (!f.edgesResolved.bottom && f.edgesResolved.top) {
+                    f.edges.bottom = f.edges.top - f.realH;
+                    f.edgesResolved.bottom = true;
+                    f.edgesConstrained.bottom = f.edgesConstrained.top;
                     madeProgress = true;
+                }
+            } else {
+                // Driven height: calculate realH if both edges resolved
+                if (f.edgesResolved.bottom && f.edgesResolved.top) {
+                    const oldH = f.realH;
+                    f.realH = Math.abs(f.edges.top - f.edges.bottom);
+                    if (Math.abs(f.realH - oldH) > 0.001) madeProgress = true;
                 }
             }
         });
     }
+
+    // --- Final Fallback Pass (The "Sticky" Logic) ---
+    // If an axis has NO dimensions, fall back to the initial realX/realY/realW/realH
+    // If a driven axis has only 1 dimension, use the sketched width/height as fallback
+    features.forEach(f => {
+        if (f.type === 'wall') return;
+
+        // X-Axis Fallbacks
+        if (!f.edgesResolved.left && !f.edgesResolved.right) {
+            f.edges.left = f.realX;
+            f.edges.right = f.realX + f.realW;
+            f.edgesResolved.left = true;
+            f.edgesResolved.right = true;
+        } else if (f.edgesResolved.left && !f.edgesResolved.right) {
+            f.edges.right = f.edges.left + f.realW;
+            f.edgesResolved.right = true;
+        } else if (!f.edgesResolved.left && f.edgesResolved.right) {
+            f.edges.left = f.edges.right - f.realW;
+            f.edgesResolved.left = true;
+        }
+
+        // Y-Axis Fallbacks
+        if (!f.edgesResolved.top && !f.edgesResolved.bottom) {
+            f.edges.bottom = f.realY;
+            f.edges.top = f.realY + f.realH;
+            f.edgesResolved.bottom = true;
+            f.edgesResolved.top = true;
+        } else if (f.edgesResolved.bottom && !f.edgesResolved.top) {
+            f.edges.top = f.edges.bottom + f.realH;
+            f.edgesResolved.top = true;
+        } else if (!f.edgesResolved.bottom && f.edgesResolved.top) {
+            f.edges.bottom = f.edges.top - f.realH;
+            f.edgesResolved.bottom = true;
+        }
+    });
+
+    // Sync legacy properties for backward compatibility
+    features.forEach(f => {
+        if (f.edgesResolved.left) f.realX = f.edges.left;
+        if (f.edgesResolved.bottom) f.realY = f.edges.bottom;
+    });
+
+    // Auto-update reference dimensions based on new positions
+    dimensions.filter(d => d.isReference).forEach(dim => {
+        const dist = calcDistanceBetweenFeatures(dim.from.featureId, dim.from.edge, dim.to.featureId, dim.to.edge);
+        dim.value = Math.round(dist * 1000) / 1000;
+    });
+}
+
+function getEdgePixelValue(f, edge) {
+    if (edge === 'left') return f.x1;
+    if (edge === 'right') return f.x2;
+    if (edge === 'top') return f.y1;
+    if (edge === 'bottom') return f.y2;
+    return 0;
 }
 function exportDXF() {
     const wall = features.find(f => f.type === 'wall');
     if (!wall) { alert('Please define a wall first.'); return; }
     recalcRealPositions();
-    syncPixelsFromReal();
     let dxf = '0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n10\n';
     dxf += '0\nLAYER\n2\nWALL\n70\n0\n62\n3\n6\nCONTINUOUS\n0\nLAYER\n2\nFEATURES\n70\n0\n62\n5\n6\nCONTINUOUS\n0\nLAYER\n2\nDIMENSIONS\n70\n0\n62\n2\n6\nCONTINUOUS\n0\nENDTAB\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n';
     features.forEach(f => {
@@ -936,18 +1142,44 @@ function exportDXF() {
         dxf += drawDXFRect(f.realX, f.realY, f.realW, f.realH, layer);
         dxf += drawDXFText(f.realX + 1, f.realY + f.realH - 2, `${f.label || f.type} (${f.realW}" x ${f.realH}")`, layer, 2);
     });
+    const scale = getScale();
     dimensions.forEach(dim => {
         if (!dim.visible) return;
         const f1 = features.find(f => f.id === dim.from.featureId); const f2 = features.find(f => f.id === dim.to.featureId);
         if (!f1 || !f2) return;
-        const e1Edge = dim.from.edge; const e2Edge = dim.to.edge; const textVal = dim.isReference ? `[${dim.value}"]` : `${dim.value}"`;
+        
+        const e1Edge = dim.from.edge; const e2Edge = dim.to.edge; 
+        const textVal = dim.isReference ? `[${dim.value}"]` : `${dim.value}"`;
+        const offset = dim.offset || 0;
+        
+        const edges1 = getEdges(f1); const edges2 = getEdges(f2);
+        const e1 = edges1[e1Edge]; const e2 = edges2[e2Edge];
+
         let x1r, y1r, x2r, y2r;
-        if (['left', 'right'].includes(e1Edge)) {
-            x1r = f1.realX + (e1Edge === 'right' ? f1.realW : 0); x2r = f2.realX + (e2Edge === 'right' ? f2.realW : 0); const midY = Math.max(f1.realY, f2.realY) + 2;
-            dxf += drawDXFLine(x1r, midY, x2r, midY, 'DIMENSIONS'); dxf += drawDXFText((x1r + x2r) / 2, midY + 1, textVal, 'DIMENSIONS', 1.5);
+        if (e1.orientation === 'vertical') {
+            // Real X coordinates are already solved
+            x1r = f1.edges[e1Edge]; 
+            x2r = f2.edges[e2Edge];
+            
+            // Calculate visual midY including offset
+            const midY_visual = (Math.max(e1.y1, e2.y1) + Math.min(e1.y2, e2.y2)) / 2 + offset;
+            // Convert visual midY to realY (Wall bottom is real 0)
+            const midY_real = (wall.y2 - midY_visual) / scale.y;
+            
+            dxf += drawDXFLine(x1r, midY_real, x2r, midY_real, 'DIMENSIONS'); 
+            dxf += drawDXFText((x1r + x2r) / 2, midY_real + 1, textVal, 'DIMENSIONS', 1.5);
         } else {
-            y1r = f1.realY + (e1Edge === 'top' ? f1.realH : 0); y2r = f2.realY + (e2Edge === 'top' ? f2.realH : 0); const midX = Math.max(f1.realX, f2.realX) + 2;
-            dxf += drawDXFLine(midX, y1r, midX, y2r, 'DIMENSIONS'); dxf += drawDXFText(midX + 1, (y1r + y2r) / 2, textVal, 'DIMENSIONS', 1.5);
+            // Real Y coordinates are already solved
+            y1r = f1.edges[e1Edge];
+            y2r = f2.edges[e2Edge];
+            
+            // Calculate visual midX including offset
+            const midX_visual = (Math.max(e1.x1, e2.x1) + Math.min(e1.x2, e2.x2)) / 2 + offset;
+            // Convert visual midX to realX (Wall left is real 0)
+            const midX_real = (midX_visual - wall.x1) / scale.x;
+            
+            dxf += drawDXFLine(midX_real, y1r, midX_real, y2r, 'DIMENSIONS'); 
+            dxf += drawDXFText(midX_real + 1, (y1r + y2r) / 2, textVal, 'DIMENSIONS', 1.5);
         }
     });
     dxf += '0\nENDSEC\n0\nEOF\n';
@@ -958,20 +1190,28 @@ function exportDXF() {
 function drawDXFRect(x, y, w, h, layer) { return `${drawDXFLine(x,y,x+w,y,layer)}${drawDXFLine(x+w,y,x+w,y+h,layer)}${drawDXFLine(x+w,y+h,x,y+h,layer)}${drawDXFLine(x,y+h,x,y,layer)}`; }
 function drawDXFLine(x1, y1, x2, y2, layer) { return `0\nLINE\n8\n${layer}\n10\n${x1}\n20\n${y1}\n30\n0\n11\n${x2}\n21\n${y2}\n31\n0\n`; }
 function drawDXFText(x, y, text, layer, height) { return `0\nTEXT\n8\n${layer}\n10\n${x}\n20\n${y}\n30\n0\n40\n${height}\n1\n${text}\n`; }
-function drawDimension(dim) {
+function drawDimension(dim, isSelected) {
     const f1 = features.find(f => f.id === dim.from.featureId); const f2 = features.find(f => f.id === dim.to.featureId);
     if (!f1 || !f2) return;
     const e1 = getEdges(f1)[dim.from.edge]; const e2 = getEdges(f2)[dim.to.edge];
-    ctx.save(); ctx.strokeStyle = '#facc15'; ctx.fillStyle = '#facc15'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    const color = isSelected ? '#ffffff' : '#facc15';
+    const offset = dim.offset || 0;
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = isSelected ? 3 : 1;
+    ctx.setLineDash(isSelected ? [] : [3, 3]);
+    if (isSelected) { ctx.shadowColor = '#facc15'; ctx.shadowBlur = 12; }
     ctx.font = dim.isReference ? 'italic 13px Inter, sans-serif' : 'bold 13px Inter, sans-serif';
     const textVal = dim.isReference ? `[${dim.value}"]` : `${dim.value}"`;
     if (e1.orientation === 'vertical') {
-        const midY = (Math.max(e1.y1, e2.y1) + Math.min(e1.y2, e2.y2)) / 2; const leftX = Math.min(e1.x1, e2.x1); const rightX = Math.max(e1.x1, e2.x1);
+        const midY = (Math.max(e1.y1, e2.y1) + Math.min(e1.y2, e2.y2)) / 2 + offset; const leftX = Math.min(e1.x1, e2.x1); const rightX = Math.max(e1.x1, e2.x1);
         ctx.beginPath(); ctx.moveTo(leftX, midY); ctx.lineTo(rightX, midY); ctx.stroke();
+        ctx.shadowBlur = 0;
         drawArrow(leftX, midY, 'right'); drawArrow(rightX, midY, 'left'); ctx.setLineDash([]); ctx.fillText(textVal, (leftX + rightX) / 2 - 10, midY - 6);
     } else {
-        const midX = (Math.max(e1.x1, e2.x1) + Math.min(e1.x2, e2.x2)) / 2; const topY = Math.min(e1.y1, e2.y1); const botY = Math.max(e1.y1, e2.y1);
+        const midX = (Math.max(e1.x1, e2.x1) + Math.min(e1.x2, e2.x2)) / 2 + offset; const topY = Math.min(e1.y1, e2.y1); const botY = Math.max(e1.y1, e2.y1);
         ctx.beginPath(); ctx.moveTo(midX, topY); ctx.lineTo(midX, botY); ctx.stroke();
+        ctx.shadowBlur = 0;
         drawArrow(midX, topY, 'down'); drawArrow(midX, botY, 'up'); ctx.setLineDash([]); ctx.fillText(textVal, midX + 6, (topY + botY) / 2 + 4);
     }
     ctx.restore();
